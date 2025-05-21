@@ -1,0 +1,103 @@
+import os
+import logging
+import sqlite3
+from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+
+# Настройка логов
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Конфигурация бота
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Берем из переменных окружения
+bot = Bot(token=TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+
+# База данных
+def init_db():
+    conn = sqlite3.connect('finance.db')
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS transactions
+                    (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    amount REAL,
+                    category TEXT,
+                    type TEXT,
+                    date TEXT)''')
+    conn.commit()
+    return conn
+
+# Состояния бота
+class Form(StatesGroup):
+    TYPE = State()
+    AMOUNT = State()
+    CATEGORY = State()
+
+# Команда /start
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    init_db()
+    await message.answer(
+        "💰 *Финансовый бот*\n\n"
+        "Доступные команды:\n"
+        "/add_income - Добавить доход\n"
+        "/add_expense - Добавить расход\n"
+        "/stats - Статистика",
+        parse_mode="Markdown"
+    )
+
+# Добавление дохода
+@dp.message(Command("add_income"))
+async def add_income(message: types.Message, state: FSMContext):
+    await state.set_state(Form.TYPE)
+    await state.update_data(type="income")
+    await message.answer("Введите сумму дохода:")
+
+# Добавление расхода
+@dp.message(Command("add_expense"))
+async def add_expense(message: types.Message, state: FSMContext):
+    await state.set_state(Form.TYPE)
+    await state.update_data(type="expense")
+    await message.answer("Введите сумму расхода:")
+
+# Обработка суммы
+@dp.message(Form.TYPE)
+async def process_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = float(message.text)
+        await state.update_data(amount=amount)
+        await state.set_state(Form.CATEGORY)
+        await message.answer("Укажите категорию:")
+    except ValueError:
+        await message.answer("❌ Введите число!")
+
+# Обработка категории
+@dp.message(Form.CATEGORY)
+async def process_category(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    conn = init_db()
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        "INSERT INTO transactions (user_id, amount, category, type, date) VALUES (?, ?, ?, ?, ?)",
+        (message.from_user.id, data['amount'], message.text, data['type'], datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+    
+    await message.answer(
+        f"✅ {data['type']} {data['amount']} руб. ({message.text}) сохранен!"
+    )
+    await state.clear()
+
+# Запуск бота
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
